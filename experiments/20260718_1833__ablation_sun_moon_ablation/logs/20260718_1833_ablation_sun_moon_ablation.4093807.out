@@ -1,9 +1,0 @@
-## SLURM PROLOG ###############################################################
-##    Job ID : 4093807
-##  Job Name : 20260718_1833_ablation_sun_moon_ablation
-##  Nodelist : gpu2503
-##      CPUs : 
-##  Mem/Node : 128000 MB
-## Directory : /oscar/home/cjmok/automated-perspective-sculptor
-##   Job Started : Sat Jul 18 06:37:15 PM EDT 2026
-###############################################################################

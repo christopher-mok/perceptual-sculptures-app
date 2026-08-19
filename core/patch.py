@@ -37,61 +37,24 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-_EARCUT_WARNED = False
-_FORCE_FAN_FILL = False
-
-
-def set_fan_fill(enabled: bool) -> None:
-    """Force (or unforce) vertex-0 fan fill instead of earcut triangulation.
-
-    Set before any patch is built. Experiments that want the fan
-    representation regardless of whether mapbox-earcut happens to be
-    installed call this so the geometry is a property of the run, not of
-    the environment.
-    """
-    global _FORCE_FAN_FILL
-    _FORCE_FAN_FILL = bool(enabled)
-
-
-def fan_fill_enabled() -> bool:
-    """True when fan fill has been forced with set_fan_fill."""
-    return _FORCE_FAN_FILL
-
-
 def _triangulate_outline_xy(xy: np.ndarray) -> np.ndarray:
     """Triangulate a closed 2-D outline into (F, 3) int32 vertex indices.
 
     Uses mapbox-earcut so non-convex outlines are filled correctly (a
-    centroid/vertex fan over-covers concave shapes). Falls back to a
-    vertex-0 fan — correct only for convex outlines — when the library is
-    missing, when set_fan_fill(True) has forced it, or when the polygon is
-    degenerate.
+    centroid/vertex fan over-covers concave shapes). A vertex-0 fan is used
+    only as a last resort when earcut finds no triangles (degenerate
+    polygon).
     """
-    global _EARCUT_WARNED
-    n = len(xy)
-    if _FORCE_FAN_FILL:
-        return np.array(
-            [[0, i, i + 1] for i in range(1, n - 1)],
-            dtype=np.int32,
-        )
-    try:
-        import mapbox_earcut
+    import mapbox_earcut
 
-        rings = np.array([n], dtype=np.uint32)
-        indices = mapbox_earcut.triangulate_float64(
-            np.ascontiguousarray(xy, dtype=np.float64),
-            rings,
-        )
-        if len(indices) >= 3:
-            return np.asarray(indices, dtype=np.int32).reshape(-1, 3)
-    except ImportError:
-        if not _EARCUT_WARNED:
-            _EARCUT_WARNED = True
-            print(
-                "[Patch] mapbox-earcut is not installed; falling back to fan "
-                "fill, so non-convex pieces will render incorrectly. "
-                "Install it with: pip install mapbox-earcut"
-            )
+    n = len(xy)
+    rings = np.array([n], dtype=np.uint32)
+    indices = mapbox_earcut.triangulate_float64(
+        np.ascontiguousarray(xy, dtype=np.float64),
+        rings,
+    )
+    if len(indices) >= 3:
+        return np.asarray(indices, dtype=np.int32).reshape(-1, 3)
     return np.array(
         [[0, i, i + 1] for i in range(1, n - 1)],
         dtype=np.int32,

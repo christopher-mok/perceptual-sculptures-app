@@ -1,9 +1,0 @@
-## SLURM PROLOG ###############################################################
-##    Job ID : 4093814
-##  Job Name : 20260718_1833_comparison_cat_face_bass_srd
-##  Nodelist : gpu2603
-##      CPUs : 
-##  Mem/Node : 128000 MB
-## Directory : /oscar/home/cjmok/automated-perspective-sculptor
-##   Job Started : Sat Jul 18 07:44:07 PM EDT 2026
-###############################################################################

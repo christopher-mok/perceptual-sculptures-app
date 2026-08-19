@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from core.loss import masked_rgb_loss, negative_space_loss, sds_loss, silhouette_loss
+from core.loss import masked_rgb_loss, negative_space_loss, silhouette_loss
 from core.overlap import OVERLAP_MODES, overlap_loss, planar_overlap_repair
 from core.renderer import DiffRenderer
 from optimizer.srd import StochasticRewriteDescent
@@ -345,9 +345,6 @@ class SceneOptimizer:
         renderer: DiffRenderer | None = None,
         resolution: tuple[int, int] = (192, 256),
         lr: float = 1e-3,
-        view2_loss: str = "mse",
-        sds_prompt: str = "",
-        sds_pipe: Any | None = None,
         device: str = "cpu",
         n_per_segment: int = 20,
         silhouette_weight: float = 2.0,
@@ -363,8 +360,6 @@ class SceneOptimizer:
         hanging_plane_y: float = DEFAULT_HANGING_PLANE_Y,
         min_patch_area: float = 0.001,
         srd_config: dict[str, object] | None = None,
-        simulated_annealing: bool = False,
-        initial_temperature: float = 1.0,
         swept_volume: "SweptVolume | None" = None,
     ) -> None:
         if not patches:
@@ -376,9 +371,6 @@ class SceneOptimizer:
         self.device = device
         self.resolution = resolution
         self.render_resolutions = resolution
-        self.view2_loss = view2_loss.lower()
-        self.sds_prompt = sds_prompt
-        self.sds_pipe = sds_pipe
         self.silhouette_weight = silhouette_weight
         self.negative_space_weight = negative_space_weight
         self.overlap_weight = overlap_weight
@@ -400,8 +392,6 @@ class SceneOptimizer:
         self.hanging_plane_size = hanging_plane_size
         self.hanging_plane_y = hanging_plane_y
         self.min_patch_area = min_patch_area
-        self.simulated_annealing = bool(simulated_annealing)
-        self.initial_temperature = float(initial_temperature)
         self.swept_volume = swept_volume
 
         self.palette = parse_palette(palette).to(device)
@@ -453,7 +443,7 @@ class SceneOptimizer:
 
     def step(self, step_idx: int = 1, total_steps: int = 1) -> dict[str, float]:
         smallest_area = self._smallest_patch_area()
-        metrics = self._continuous_step_with_optimizer(self.optim, step_idx, total_steps)
+        metrics = self._continuous_step_with_optimizer(self.optim)
         metrics["smallest_patch_area"] = smallest_area
         metrics["tiny_patches_deleted"] = 0.0
         if self.srd is not None:
@@ -491,8 +481,6 @@ class SceneOptimizer:
     def _continuous_step_with_optimizer(
         self,
         optimizer: torch.optim.Optimizer,
-        step_idx: int,
-        total_steps: int,
     ) -> dict[str, float]:
         valid_shape_states = self._capture_patch_shape_states()
         optimizer.zero_grad(set_to_none=True)
@@ -506,36 +494,8 @@ class SceneOptimizer:
         loss.backward()
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
-        noise_scale = self._apply_simulated_annealing(step_idx, total_steps)
         self._post_step_constraints(valid_shape_states, optimizer)
-        metrics = self._metrics_from_components(loss, components)
-        metrics["annealing_noise_scale"] = noise_scale
-        return metrics
-
-    def _apply_simulated_annealing(self, step_idx: int, total_steps: int) -> float:
-        if not self.simulated_annealing or self.initial_temperature <= 0.0:
-            return 0.0
-
-        progress = min(max(float(step_idx) / max(float(total_steps), 1.0), 0.0), 1.0)
-        noise_scale = self.initial_temperature * (1.0 - progress)
-        if noise_scale <= 0.0:
-            return 0.0
-
-        with torch.no_grad():
-            for patch in self.patches:
-                patch.center.add_(torch.randn_like(patch.center) * (noise_scale * 0.1))
-                patch.theta.add_(torch.randn_like(patch.theta) * (noise_scale * 0.3))
-                for cp in patch.control_points:
-                    cp.x.add_(torch.randn_like(cp.x) * (noise_scale * 0.05))
-                    cp.y.add_(torch.randn_like(cp.y) * (noise_scale * 0.05))
-                    cp.z.add_(torch.randn_like(cp.z) * (noise_scale * 0.05))
-                    cp.handle_scale.add_(
-                        torch.randn_like(cp.handle_scale) * (noise_scale * 0.02)
-                    )
-                    cp.handle_rotation.add_(
-                        torch.randn_like(cp.handle_rotation) * (noise_scale * 0.2)
-                    )
-        return float(noise_scale)
+        return self._metrics_from_components(loss, components)
 
     def _metrics_from_components(
         self,
@@ -659,14 +619,7 @@ class SceneOptimizer:
         loss2 = torch.zeros((), device=loss1.device)
         loss2_silhouette = torch.zeros((), device=loss1.device)
         loss2_negative_space = torch.zeros((), device=loss1.device)
-        if self.view2_loss.startswith("sds"):
-            if not self.sds_prompt:
-                raise ValueError("SDS optimization requires a text prompt.")
-            loss2 = sds_loss(render2[..., :3], self.sds_prompt, self.sds_pipe)
-            if self.target2_mask is not None:
-                loss2_negative_space = negative_space_loss(render2, self.target2_mask)
-                loss2 = loss2 + self.negative_space_weight * loss2_negative_space
-        elif self.target2 is not None:
+        if self.target2 is not None:
             assert self.target2_mask is not None
             loss2_rgb = (
                 torch.zeros((), device=render2.device)

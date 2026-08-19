@@ -1,19 +1,13 @@
-"""Patch initialization strategies.
+"""Patch initialization.
 
-Each function returns a list of Patch objects ready to be passed to
-SceneOptimizer.
-
-Strategies
-----------
-init_experimental : Patches scattered within a 3D viewport-grid box.
-init_sam    : Use Meta's Segment Anything Model to seed patch positions from
-              a reference image (requires the ``segment-anything`` package).
+initialize_patches scatters random patches within a 3D viewport-grid box
+(or inside the swept volume when one is provided) and returns a list of
+Patch objects ready to be passed to SceneOptimizer.
 """
 
 from __future__ import annotations
 
 import math
-import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -29,17 +23,15 @@ if TYPE_CHECKING:
 # Shared defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BOUNDS: tuple[float, float, float, float] = (-2.0, 2.0, -2.0, 2.0)
 _DEFAULT_RADIUS: float = 0.18   # spline radius in local patch units
-_DEFAULT_Y:      float = 0.0
-_EXPERIMENTAL_BOX_SIZE: float = 3.0
-_EXPERIMENTAL_HALF_EXTENT: float = _EXPERIMENTAL_BOX_SIZE * 0.5
-_EXPERIMENTAL_MIN: np.ndarray = np.array(
-    [-_EXPERIMENTAL_HALF_EXTENT, -_EXPERIMENTAL_HALF_EXTENT, -_EXPERIMENTAL_HALF_EXTENT],
+_BOX_SIZE: float = 3.0
+_HALF_EXTENT: float = _BOX_SIZE * 0.5
+_BOX_MIN: np.ndarray = np.array(
+    [-_HALF_EXTENT, -_HALF_EXTENT, -_HALF_EXTENT],
     dtype=np.float32,
 )
-_EXPERIMENTAL_MAX: np.ndarray = np.array(
-    [_EXPERIMENTAL_HALF_EXTENT, _EXPERIMENTAL_HALF_EXTENT, _EXPERIMENTAL_HALF_EXTENT],
+_BOX_MAX: np.ndarray = np.array(
+    [_HALF_EXTENT, _HALF_EXTENT, _HALF_EXTENT],
     dtype=np.float32,
 )
 _THETA_CAMERA_MARGIN: float = math.radians(15.0)
@@ -147,11 +139,11 @@ def _sample_allowed_theta(
 
 
 # ---------------------------------------------------------------------------
-# Experimental initialization
+# Random initialization
 # ---------------------------------------------------------------------------
 
 
-def init_experimental(
+def initialize_patches(
     n_patches: int,
     cameras: list["Camera"] | None = None,
     radius: float = _DEFAULT_RADIUS,
@@ -159,9 +151,13 @@ def init_experimental(
     seed: int | None = None,
     swept_volume: "SweptVolume | None" = None,
 ) -> list[Patch]:
-    """Randomize patch centers within a 4x4x4 viewport-grid box."""
+    """Randomize patch centers within a 3x3x3 viewport-grid box.
+
+    When a swept volume is provided, centers are sampled from it instead so
+    every patch starts inside the region both cameras can see.
+    """
     rng = np.random.default_rng(seed)
-    extents = _EXPERIMENTAL_MAX - _EXPERIMENTAL_MIN
+    extents = _BOX_MAX - _BOX_MIN
     patch_radius = max(radius, float(np.cbrt(np.prod(extents) / max(n_patches, 1)) * 0.16))
     camera_angles = _camera_yaw_angles(cameras)
 
@@ -170,8 +166,8 @@ def init_experimental(
         if swept_volume is not None:
             point = swept_volume.sample_point(rng)
         else:
-            point = rng.uniform(_EXPERIMENTAL_MIN, _EXPERIMENTAL_MAX).astype(np.float32)
-            point = np.clip(point, _EXPERIMENTAL_MIN, _EXPERIMENTAL_MAX)
+            point = rng.uniform(_BOX_MIN, _BOX_MAX).astype(np.float32)
+            point = np.clip(point, _BOX_MIN, _BOX_MAX)
         patches.append(_make_patch(
             center=point.tolist(),
             theta=_sample_allowed_theta(rng, camera_angles),
@@ -181,194 +177,3 @@ def init_experimental(
         ))
 
     return patches
-
-
-# ---------------------------------------------------------------------------
-# SAM-guided initialization
-# ---------------------------------------------------------------------------
-
-_SAM_VARIANTS: dict[str, tuple[str, str, str]] = {
-    "MobileSAM (fast)":         ("mobile_sam",       "mobile_sam.pt",        "vit_t"),
-    "SAM vit_b (balanced)":     ("segment_anything", "sam_vit_b_01ec64.pth", "vit_b"),
-    "SAM vit_h (best quality)": ("segment_anything", "sam_vit_h_4b8939.pth", "vit_h"),
-}
-
-_SAM_INSTALL_HINTS: dict[str, str] = {
-    "mobile_sam": (
-        "pip install git+https://github.com/ChaoningZhang/MobileSAM.git\n"
-        "curl -L https://github.com/ChaoningZhang/MobileSAM/releases/download/v1.0/mobile_sam.pt"
-        " -o mobile_sam.pt"
-    ),
-    "segment_anything": (
-        "pip install git+https://github.com/facebookresearch/segment-anything.git\n"
-        "curl -L https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-        " -o sam_vit_b_01ec64.pth"
-    ),
-}
-
-
-def init_sam(
-    image: np.ndarray,
-    n_patches: int,
-    bounds: tuple[float, float, float, float] = _DEFAULT_BOUNDS,
-    radius: float = _DEFAULT_RADIUS,
-    y: float = _DEFAULT_Y,
-    sam_variant: str = "MobileSAM (fast)",
-    device: str = "cpu",
-    swept_volume: "SweptVolume | None" = None,
-) -> list[Patch]:
-    """Initialize patches from SAM segmentation of a reference image.
-
-    Each segment's centroid becomes a patch centre; the spline radius is
-    scaled proportionally to the segment's area.  Albedo is seeded from
-    the segment's mean colour.
-
-    Args:
-        image:       (H, W, 3/4) uint8 RGB/RGBA numpy array.
-        n_patches:   Desired total number of patches.
-        bounds:      World-space XZ extent.
-        radius:      Base spline radius (scaled per segment).
-        y:           Y height of all patches.
-        sam_variant: Key in _SAM_VARIANTS matching the UI label.
-        device:      PyTorch device string.
-    """
-    if sam_variant not in _SAM_VARIANTS:
-        raise ValueError(
-            f"Unknown SAM variant {sam_variant!r}. "
-            f"Choose from: {list(_SAM_VARIANTS)}"
-        )
-
-    package, checkpoint, model_type = _SAM_VARIANTS[sam_variant]
-
-    try:
-        if package == "mobile_sam":
-            from mobile_sam import SamAutomaticMaskGenerator, sam_model_registry  # type: ignore[import]
-        else:
-            from segment_anything import SamAutomaticMaskGenerator, sam_model_registry  # type: ignore[import]
-    except ImportError as exc:
-        raise ImportError(
-            f"{sam_variant} requires the '{package}' package. Install with:\n"
-            f"  {_SAM_INSTALL_HINTS[package]}"
-        ) from exc
-
-    if not os.path.isfile(checkpoint):
-        raise FileNotFoundError(
-            f"Checkpoint not found: {checkpoint!r}\n"
-            f"Download instructions:\n  {_SAM_INSTALL_HINTS[package]}"
-        )
-
-    sam = sam_model_registry[model_type](checkpoint=checkpoint)
-    sam.to(device=device)
-    generator = SamAutomaticMaskGenerator(
-        sam,
-        points_per_side=32,
-        pred_iou_thresh=0.88,
-        stability_score_thresh=0.95,
-        min_mask_region_area=200,
-    )
-    image_rgb = image[..., :3]
-    masks = generator.generate(image_rgb)
-    masks = sorted(masks, key=lambda m: m["area"], reverse=True)[:n_patches]
-
-    x_min, x_max, z_min, z_max = bounds
-    H, W = image_rgb.shape[:2]
-
-    patches: list[Patch] = []
-    for i, mask_data in enumerate(masks):
-        bx, by, bw, bh = mask_data["bbox"]
-        cx_n = (bx + bw / 2.0) / W
-        cy_n = (by + bh / 2.0) / H
-
-        wx = x_min + cx_n * (x_max - x_min)
-        wz = z_min + cy_n * (z_max - z_min)
-
-        # Scale radius proportionally to segment footprint
-        footprint    = math.sqrt(mask_data["area"] / (H * W))
-        patch_radius = float(np.clip(radius * footprint * 6.0, radius * 0.4, radius * 3.0))
-
-        seg: np.ndarray = mask_data["segmentation"]
-        mean_rgb = (image_rgb[seg].mean(axis=0) / 255.0).tolist() if seg.any() else [1.0, 1.0, 1.0]
-
-        center = (
-            swept_volume.sample_point(np.random.default_rng(i))
-            if swept_volume is not None else np.array([wx, y, wz], dtype=np.float32)
-        )
-        patches.append(_make_patch(
-            center=center.tolist(),
-            theta=0.0,
-            radius=patch_radius,
-            albedo=mean_rgb,
-            device=device,
-            label=f"patch_{i:04d}",
-        ))
-
-    # Pad with experimental patches if SAM found fewer than requested.
-    if len(patches) < n_patches:
-        extra = init_experimental(
-            n_patches - len(patches),
-            radius=radius,
-            device=device,
-            seed=42,
-            swept_volume=swept_volume,
-        )
-        for j, p in enumerate(extra):
-            p.label = f"patch_{len(patches) + j:04d}"
-        patches.extend(extra)
-
-    return patches
-
-
-# ---------------------------------------------------------------------------
-# Dispatcher
-# ---------------------------------------------------------------------------
-
-
-def initialize_patches(
-    mode: str,
-    n_patches: int,
-    bounds: tuple[float, float, float, float] = _DEFAULT_BOUNDS,
-    radius: float = _DEFAULT_RADIUS,
-    y: float = _DEFAULT_Y,
-    device: str = "cpu",
-    *,
-    reference_image: np.ndarray | None = None,
-    sam_variant: str = "MobileSAM (fast)",
-    cameras: list["Camera"] | None = None,
-    seed: int | None = None,
-    swept_volume: "SweptVolume | None" = None,
-) -> list[Patch]:
-    """Single entry-point called by the UI.
-
-    Args:
-        mode:            "Experimental" or "SAM segmentation".
-        n_patches:       Number of patches to create.
-        bounds:          World-space XZ extent.
-        radius:          Initial spline radius per patch.
-        y:               Patch centre height.
-        device:          PyTorch device string.
-        reference_image: Required for SAM mode.
-        sam_variant:     SAM model label.
-        cameras:         Scene cameras used by Experimental mode.
-        seed:            RNG seed for Experimental mode.
-    """
-    if mode == "Experimental":
-        return init_experimental(
-            n_patches,
-            cameras,
-            radius,
-            device,
-            seed=seed,
-            swept_volume=swept_volume,
-        )
-
-    if mode == "SAM segmentation":
-        if reference_image is None:
-            raise ValueError(
-                "SAM segmentation requires a reference image. "
-                "Load a View 1 target image first."
-            )
-        return init_sam(reference_image, n_patches, bounds, radius, y,
-                        sam_variant=sam_variant, device=device,
-                        swept_volume=swept_volume)
-
-    raise ValueError(f"Unknown initialization mode: {mode!r}")

@@ -78,8 +78,9 @@ def _labeled_slider(
 
 
 class PatchesSection(QGroupBox):
-    initialize_requested = pyqtSignal(int, str)   # n_patches, init_mode
+    initialize_requested = pyqtSignal(int)   # n_patches
     hanging_plane_size_changed = pyqtSignal(float)
+    swept_volume_resolution_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Patches", parent)
@@ -104,13 +105,6 @@ class PatchesSection(QGroupBox):
         layout.addLayout(n_row)
         layout.addWidget(self._n_slider)
 
-        # Initialization dropdown
-        self._init_combo = QComboBox()
-        self._init_combo.addItems(["Experimental", "SAM segmentation"])
-        self._init_combo.setStyleSheet("color: #ddd; background: #2a2a2a;")
-        self._init_combo.currentTextChanged.connect(self._on_mode_changed)
-        layout.addLayout(_row("Initialization", self._init_combo))
-
         # Hanging plane footprint
         self._plane_slider, self._plane_lbl = _labeled_slider(10, 100, 50, "{:.1f}")
         self._plane_lbl.setText(f"{self.hanging_plane_size:.1f}")
@@ -124,20 +118,27 @@ class PatchesSection(QGroupBox):
         layout.addLayout(plane_row)
         layout.addWidget(self._plane_slider)
 
-        # SAM model selector (only visible in SAM mode)
-        self._sam_model_lbl = QLabel("SAM model")
-        self._sam_model_lbl.setStyleSheet(_LABEL_STYLE)
-        self._sam_model_combo = QComboBox()
-        self._sam_model_combo.addItems([
-            "MobileSAM (fast)",
-            "SAM vit_b (balanced)",
-            "SAM vit_h (best quality)",
-        ])
-        self._sam_model_combo.setStyleSheet("color: #ddd; background: #2a2a2a;")
-        self._sam_model_row = QHBoxLayout()
-        self._sam_model_row.addWidget(self._sam_model_lbl)
-        self._sam_model_row.addWidget(self._sam_model_combo)
-        layout.addLayout(self._sam_model_row)
+        # Swept volume resolution
+        self._volume_resolution_slider, self._volume_resolution_lbl = _labeled_slider(
+            24,
+            512,
+            108,
+            "{}",
+        )
+        self._volume_resolution_slider.valueChanged.connect(
+            lambda v: self._volume_resolution_lbl.setText(str(v))
+        )
+        self._volume_resolution_slider.valueChanged.connect(
+            self.swept_volume_resolution_changed.emit
+        )
+        volume_row = QHBoxLayout()
+        volume_lbl = QLabel("Swept volume resolution")
+        volume_lbl.setStyleSheet(_LABEL_STYLE)
+        volume_row.addWidget(volume_lbl)
+        volume_row.addStretch()
+        volume_row.addWidget(self._volume_resolution_lbl)
+        layout.addLayout(volume_row)
+        layout.addWidget(self._volume_resolution_slider)
 
         # Device toggle
         self._device_combo = QComboBox()
@@ -156,40 +157,23 @@ class PatchesSection(QGroupBox):
         self._init_btn.clicked.connect(self._on_initialize)
         layout.addWidget(self._init_btn)
 
-        # Set initial SAM row visibility
-        self._on_mode_changed(self._init_combo.currentText())
-
-    def _on_mode_changed(self, text: str) -> None:
-        sam_only = text == "SAM segmentation"
-        self._sam_model_lbl.setVisible(sam_only)
-        self._sam_model_combo.setVisible(sam_only)
-
     def _on_initialize(self) -> None:
         n = self._n_slider.value()
-        mode = self._init_combo.currentText()
-        print(f"[Initialize patches] n={n}, mode={mode!r}")
-        self.initialize_requested.emit(n, mode)
-
-        # Trigger visibility update in case the widget was just shown
-        self._on_mode_changed(mode)
+        print(f"[Initialize patches] n={n}")
+        self.initialize_requested.emit(n)
 
     @property
     def n_patches(self) -> int:
         return self._n_slider.value()
 
     @property
-    def init_mode(self) -> str:
-        return self._init_combo.currentText()
-
-    @property
-    def sam_model(self) -> str:
-        """Returns the selected SAM variant label."""
-        return self._sam_model_combo.currentText()
-
-    @property
     def hanging_plane_size(self) -> float:
         """Returns the square hanging plane side length in scene units."""
         return self._plane_slider.value() / 10.0
+
+    @property
+    def swept_volume_resolution(self) -> int:
+        return self._volume_resolution_slider.value()
 
     def _on_plane_size_changed(self, value: int) -> None:
         size = value / 10.0
@@ -199,10 +183,9 @@ class PatchesSection(QGroupBox):
     def set_running(self, running: bool) -> None:
         for widget in (
             self._n_slider,
-            self._init_combo,
-            self._sam_model_combo,
             self._device_combo,
             self._plane_slider,
+            self._volume_resolution_slider,
             self._init_btn,
         ):
             widget.setEnabled(not running)
@@ -265,25 +248,6 @@ class OptimizationSection(QGroupBox):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 14, 10, 10)
         layout.setSpacing(8)
-
-        # View 2 loss dropdown
-        self._loss_combo = QComboBox()
-        self._loss_combo.addItems(["MSE (target image)", "SDS (text prompt)"])
-        self._loss_combo.setStyleSheet("color: #ddd; background: #2a2a2a;")
-        self._loss_combo.currentTextChanged.connect(self._on_loss_changed)
-        layout.addLayout(_row("View 2 loss", self._loss_combo))
-
-        # SDS prompt input
-        sds_lbl = QLabel("SDS prompt")
-        sds_lbl.setStyleSheet(_LABEL_STYLE)
-        self._sds_input = QLineEdit()
-        self._sds_input.setPlaceholderText("Describe the target appearance…")
-        self._sds_input.setStyleSheet(
-            "color: #ddd; background: #2a2a2a; border: 1px solid #444; border-radius: 3px; padding: 4px;"
-        )
-        self._sds_input.setEnabled(False)
-        layout.addWidget(sds_lbl)
-        layout.addWidget(self._sds_input)
 
         # Learning rate slider (log scale)
         default_lr = 2.75e-3
@@ -411,9 +375,6 @@ class OptimizationSection(QGroupBox):
 
         self._on_run_mode_changed(self._run_mode_combo.currentText())
 
-    def _on_loss_changed(self, text: str) -> None:
-        self._sds_input.setEnabled("SDS" in text)
-
     def _on_run_mode_changed(self, text: str) -> None:
         fixed_steps = text == "Fixed steps"
         for i in range(self._steps_row.count()):
@@ -438,11 +399,7 @@ class OptimizationSection(QGroupBox):
 
     def _on_run(self) -> None:
         lr = _slider_to_lr(self._lr_slider.value())
-        loss = self._loss_combo.currentText()
-        prompt = self._sds_input.text()
-        print(
-            f"[Run optimization] loss={loss!r}, lr={lr:.4e}, sds_prompt={prompt!r}"
-        )
+        print(f"[Run optimization] lr={lr:.4e}")
         self.run_requested.emit()
 
     def _on_pause_toggled(self, paused: bool) -> None:
@@ -469,14 +426,6 @@ class OptimizationSection(QGroupBox):
     def palette(self) -> str:
         return self._palette_input.text()
 
-    @property
-    def loss_type(self) -> str:
-        return self._loss_combo.currentText()
-
-    @property
-    def sds_prompt(self) -> str:
-        return self._sds_input.text()
-
     def set_running(self, running: bool) -> None:
         self._run_btn.setEnabled(not running)
         self._run_btn.setText("Optimizing..." if running else "Run optimization")
@@ -486,7 +435,6 @@ class OptimizationSection(QGroupBox):
         self._pause_btn.blockSignals(False)
         self._pause_btn.setEnabled(running)
         for widget in (
-            self._loss_combo,
             self._lr_slider,
             self._run_mode_combo,
             self._steps_slider,
@@ -494,25 +442,6 @@ class OptimizationSection(QGroupBox):
             self._palette_input,
         ):
             widget.setEnabled(not running)
-        self._sds_input.setEnabled((not running) and "SDS" in self._loss_combo.currentText())
-
-    def set_benchmark_running(self, running: bool) -> None:
-        self._run_btn.setEnabled(not running)
-        self._run_btn.setText("Run optimization")
-        self._pause_btn.setEnabled(False)
-        self._reset_btn.setEnabled(not running)
-        for widget in (
-            self._loss_combo,
-            self._lr_slider,
-            self._run_mode_combo,
-            self._steps_slider,
-            self._threshold_slider,
-            self._palette_input,
-        ):
-            widget.setEnabled(not running)
-        self._sds_input.setEnabled(
-            (not running) and "SDS" in self._loss_combo.currentText()
-        )
 
     def reset_controls(self) -> None:
         self.set_running(False)
@@ -528,122 +457,6 @@ class OptimizationSection(QGroupBox):
         total = self._steps_slider.value()
         self._progress_bar.setValue(min(step, total))
         self._progress_bar.setFormat(f"{min(step, total)} / {total}")
-
-
-# ---------------------------------------------------------------------------
-# Benchmark section
-# ---------------------------------------------------------------------------
-
-
-class BenchmarkSection(QGroupBox):
-    run_requested = pyqtSignal()
-    swept_volume_resolution_changed = pyqtSignal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("Benchmark", parent)
-        self.setStyleSheet(_SECTION_STYLE)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 14, 10, 10)
-        layout.setSpacing(8)
-
-        self._srd_enabled = QCheckBox("Use stochastic rewrite descent")
-        self._srd_enabled.setChecked(True)
-        self._srd_enabled.setStyleSheet(_LABEL_STYLE)
-        layout.addWidget(self._srd_enabled)
-
-        self._annealing_enabled = QCheckBox("Use simulated annealing")
-        self._annealing_enabled.setChecked(False)
-        self._annealing_enabled.setStyleSheet(_LABEL_STYLE)
-        layout.addWidget(self._annealing_enabled)
-
-        self._steps_slider, self._steps_lbl = _labeled_slider(10, 500, 200, "{}")
-        self._steps_slider.valueChanged.connect(
-            lambda _v: self._steps_lbl.setText(str(self.steps_per_trial))
-        )
-        self._steps_lbl.setText(str(self.steps_per_trial))
-        steps_row = QHBoxLayout()
-        steps_lbl = QLabel("Steps per trial")
-        steps_lbl.setStyleSheet(_LABEL_STYLE)
-        steps_row.addWidget(steps_lbl)
-        steps_row.addStretch()
-        steps_row.addWidget(self._steps_lbl)
-        layout.addLayout(steps_row)
-        layout.addWidget(self._steps_slider)
-
-        self._volume_resolution_slider, self._volume_resolution_lbl = _labeled_slider(
-            24,
-            512,
-            108,
-            "{}",
-        )
-        self._volume_resolution_slider.valueChanged.connect(
-            lambda v: self._volume_resolution_lbl.setText(str(v))
-        )
-        self._volume_resolution_slider.valueChanged.connect(
-            self.swept_volume_resolution_changed.emit
-        )
-        volume_row = QHBoxLayout()
-        volume_lbl = QLabel("Swept volume resolution")
-        volume_lbl.setStyleSheet(_LABEL_STYLE)
-        volume_row.addWidget(volume_lbl)
-        volume_row.addStretch()
-        volume_row.addWidget(self._volume_resolution_lbl)
-        layout.addLayout(volume_row)
-        layout.addWidget(self._volume_resolution_slider)
-
-        self._run_btn = QPushButton("Run benchmark")
-        self._run_btn.setStyleSheet(
-            "QPushButton { background: #67522a; color: #fff; border-radius: 4px; padding: 6px; }"
-            "QPushButton:hover { background: #806735; }"
-            "QPushButton:pressed { background: #4f3e20; }"
-        )
-        self._run_btn.clicked.connect(self.run_requested.emit)
-        layout.addWidget(self._run_btn)
-
-        self._status = QLabel(
-            "Runs 3 trials per pair at a 3.0e-3 learning rate."
-        )
-        self._status.setStyleSheet("color: #777; font-size: 11px;")
-        self._status.setWordWrap(True)
-        layout.addWidget(self._status)
-
-    def set_running(self, running: bool) -> None:
-        self._run_btn.setEnabled(not running)
-        self._srd_enabled.setEnabled(not running)
-        self._annealing_enabled.setEnabled(not running)
-        self._steps_slider.setEnabled(not running)
-        self._volume_resolution_slider.setEnabled(not running)
-        if running:
-            self._run_btn.setText("Running benchmark...")
-        else:
-            self._run_btn.setText("Run benchmark")
-
-    def set_available(self, available: bool) -> None:
-        self._run_btn.setEnabled(available)
-        self._srd_enabled.setEnabled(available)
-        self._annealing_enabled.setEnabled(available)
-        self._steps_slider.setEnabled(available)
-        self._volume_resolution_slider.setEnabled(available)
-
-    def set_status(self, text: str) -> None:
-        self._status.setText(text)
-
-    @property
-    def use_srd(self) -> bool:
-        return self._srd_enabled.isChecked()
-
-    @property
-    def use_simulated_annealing(self) -> bool:
-        return self._annealing_enabled.isChecked()
-
-    @property
-    def steps_per_trial(self) -> int:
-        return self._steps_slider.value() * 10
-
-    @property
-    def swept_volume_resolution(self) -> int:
-        return self._volume_resolution_slider.value()
 
 
 # ---------------------------------------------------------------------------
@@ -1121,9 +934,6 @@ class ControlsPanel(QWidget):
 
         self.optimization = OptimizationSection(container)
         layout.addWidget(self.optimization)
-
-        self.benchmark = BenchmarkSection(container)
-        layout.addWidget(self.benchmark)
 
         self.srd = SRDSection(container)
         layout.addWidget(self.srd)

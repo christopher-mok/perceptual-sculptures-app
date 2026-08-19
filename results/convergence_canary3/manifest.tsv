@@ -1,3 +1,0 @@
-job_id	job_name	pair	method	seed	output_dir
-4087283	conv_horse_circle_srd_seed0	horse_circle	srd	0	/oscar/home/cjmok/automated-perspective-sculptor/results/convergence_canary3/conv_horse_circle_srd_seed0
-4087284	conv_horse_circle_base_seed0	horse_circle	base	0	/oscar/home/cjmok/automated-perspective-sculptor/results/convergence_canary3/conv_horse_circle_base_seed0

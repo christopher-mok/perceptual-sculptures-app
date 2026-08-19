@@ -96,12 +96,9 @@ Patch geometry and parameters.
 
 ### `core/initialization.py`
 
-Patch initialization strategies.
+Patch initialization.
 
-- Grid.
-- Random.
-- Experimental random 3D box.
-- Optional SAM-based initialization.
+- Random patch centers inside a 3D box (or the swept volume when available).
 
 ### `core/renderer.py`
 
@@ -117,7 +114,6 @@ Basic differentiable losses.
 - RGB mean squared error.
 - Silhouette loss.
 - Masked RGB loss.
-- Optional SDS-style placeholder loss when a diffusion pipeline is provided.
 
 ### `core/optimizer.py`
 
@@ -323,7 +319,7 @@ Why it matters:
 How it works:
 
 - Calls `initialize_patches()`.
-- Passes the selected mode, patch count, reference target image, cameras, SAM model option, and device.
+- Passes the patch count, cameras, device, and swept volume.
 - Snaps patch colors to the palette.
 - Sends patches to the viewport.
 - Updates camera preview renders.
@@ -560,34 +556,14 @@ Returns:
 
 Why it matters:
 
-- All initialization modes use this helper to build consistent patch geometry.
+- Initialization uses this helper to build consistent patch geometry.
 
 How it works:
 
 - Places several control points around a local circle.
 - Creates a patch with a center, rotation angle, albedo color, and label.
 
-### `init_grid(...)`
-
-What it does:
-
-- Creates patches on a regular grid.
-
-Returns:
-
-- A list of `Patch` objects.
-
-Why it matters:
-
-- Provides a stable, predictable starting point.
-
-How it works:
-
-- Computes rows and columns from the requested patch count.
-- Places patch centers across the configured XZ bounds.
-- Keeps the local Y position fixed.
-
-### `init_random(...)`
+### `initialize_patches(...)`
 
 What it does:
 
@@ -599,75 +575,13 @@ Returns:
 
 Why it matters:
 
-- Provides a more exploratory starting point than the grid.
-
-How it works:
-
-- Samples X and Z from the configured bounds.
-- Uses a fixed Y value.
-- Samples an initial rotation angle from a limited range.
-
-### `init_experimental(...)`
-
-What it does:
-
-- Creates patches scattered randomly inside a 5x5x5 box.
-
-Returns:
-
-- A list of `Patch` objects.
-
-Why it matters:
-
-- Provides a 3D initialization that is less limited than grid or random.
-
-How it works:
-
-- Samples X, Y, and Z inside the experimental box.
-- Samples theta only from bands at least 15 degrees away from either camera yaw.
-- Chooses an adaptive patch radius based on patch count and box volume.
-
-### `init_sam(...)`
-
-What it does:
-
-- Creates patches from SAM segmentation masks when SAM is available.
-
-Returns:
-
-- A list of `Patch` objects.
-
-Why it matters:
-
-- Gives an image-aware initialization based on target regions.
-
-How it works:
-
-- Runs SAM mask generation.
-- Sorts masks by area.
-- Maps mask bounding boxes into scene coordinates.
-- Uses mean segment color for patch albedo.
-- Pads with random patches if too few masks are found.
-
-### `initialize_patches(...)`
-
-What it does:
-
-- Dispatches to the selected initialization mode.
-
-Returns:
-
-- A list of `Patch` objects.
-
-Why it matters:
-
 - This is the single initialization API used by the UI.
 
 How it works:
 
-- Checks the selected mode string.
-- Calls `init_grid`, `init_random`, `init_experimental`, or `init_sam`.
-- Falls back to random patches when SAM is unavailable or no reference image exists.
+- Samples patch centers inside a 3D box, or from the swept volume when one is provided.
+- Samples theta only from bands at least 15 degrees away from either camera yaw.
+- Chooses an adaptive patch radius based on patch count and box volume.
 
 ## `core/patch.py`
 
@@ -1270,25 +1184,6 @@ How it works:
 - Weights the error by the foreground mask.
 - Normalizes by mask area.
 
-### `sds_loss(rendered, prompt, pipe, guidance_scale, timestep)`
-
-What it does:
-
-- Provides an optional score-distillation-style loss if a diffusion pipeline is available.
-
-Returns:
-
-- A scalar torch tensor.
-
-Why it matters:
-
-- It is intended as an alternative view 2 objective when optimizing to text instead of an image.
-
-How it works:
-
-- Uses a diffusion pipeline to produce a guidance signal from the rendered image and prompt.
-- If no pipeline is supplied, the current optimizer path effectively treats this as unavailable.
-
 ## `core/optimizer.py`
 
 ### `parse_palette(text)`
@@ -1576,7 +1471,6 @@ How it works:
 - Renders view 1 and view 2.
 - Computes RGB and silhouette losses.
 - Computes negative-space losses for both target-image views.
-- Computes optional view 2 SDS loss or image loss.
 - Computes overlap, visibility, and camera-bounds penalties.
 - Computes `lambda_count * num_active_patches`; this is constant for Adam but matters when SRD compares structural rewrites.
 - Combines all terms into one scalar total loss.
@@ -1605,7 +1499,7 @@ How it works:
 
 - Computes view 1 masked RGB and silhouette losses.
 - Computes view 1 negative-space loss from rendered alpha in target background pixels.
-- Computes view 2 image or SDS loss.
+- Computes view 2 image loss.
 - Computes view 2 negative-space loss when a second target image is available.
 - Computes overlap, visibility, and camera-bounds penalties for the supplied patch sequence.
 - Combines the weighted terms into the same total loss used for optimization.
@@ -1833,7 +1727,7 @@ Significance:
 
 ### View 2 image loss
 
-If view 2 target-image mode is selected and a second target exists:
+If a second target image exists:
 
 ```text
 view2_rgb = masked_rgb_loss(render2, target2, mask2)
@@ -1841,14 +1735,6 @@ view2_total = view2_rgb
             + silhouette_weight * silhouette_loss(render2, mask2)
             + negative_space_weight * negative_space_loss(render2, mask2)
 ```
-
-If SDS mode is selected, the optimizer can use:
-
-```text
-view2_loss = sds_loss(render2, prompt, pipe)
-```
-
-In the current UI path, SDS depends on having a diffusion pipeline available. The normal image-based path is the main implemented path.
 
 ### Silhouette loss
 
