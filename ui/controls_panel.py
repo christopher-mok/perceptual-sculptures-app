@@ -478,6 +478,20 @@ class SRDSection(QGroupBox):
         self._enabled.setStyleSheet(_LABEL_STYLE)
         layout.addWidget(self._enabled)
 
+        # Deletion candidates are softmax-sampled by the net damage proxy
+        # (area x (spill - coverage)) instead of uniformly.
+        self._importance = QCheckBox("Importance deletion")
+        self._importance.setChecked(True)
+        self._importance.setStyleSheet(_LABEL_STYLE)
+        layout.addWidget(self._importance)
+
+        # A piece that helps one view but hurts the other is deleted and
+        # respawned into the hole it leaves, rather than kept or dropped.
+        self._conflict_restart = QCheckBox("Conflict restart")
+        self._conflict_restart.setChecked(True)
+        self._conflict_restart.setStyleSheet(_LABEL_STYLE)
+        layout.addWidget(self._conflict_restart)
+
         self._propose_slider, self._propose_lbl = _labeled_slider(20, 200, 50, "{}")
         self._propose_slider.valueChanged.connect(lambda v: self._propose_lbl.setText(str(v)))
         layout.addLayout(self._value_row("Propose every N steps", self._propose_lbl))
@@ -534,6 +548,10 @@ class SRDSection(QGroupBox):
             "swept_volume_spawn_fraction": self._swept_spawn_slider.value() / 100.0,
             "max_patches": self._max_patches_slider.value(),
             "min_patches": self._min_patches_slider.value(),
+            "deletion_importance": self._importance.isChecked(),
+            "deletion_proxy": "net",
+            "deletion_temperature": 1.0,
+            "conflict_restart": self._conflict_restart.isChecked(),
         }
 
     def set_stats(self, metrics: dict) -> None:
@@ -541,13 +559,17 @@ class SRDSection(QGroupBox):
         added = int(metrics.get("srd_total_adds", 0))
         deleted = int(metrics.get("srd_total_deletes", 0))
         mandatory = int(metrics.get("srd_total_mandatory_deletes", 0))
+        restarts = int(metrics.get("srd_total_restarts", 0))
         self._stats_lbl.setText(
-            f"Patches: {patches} | Added: {added} | Deleted: {deleted} | Mandatory deleted: {mandatory}"
+            f"Patches: {patches} | Added: {added} | Deleted: {deleted} | "
+            f"Restarted: {restarts} | Mandatory deleted: {mandatory}"
         )
 
     def set_running(self, running: bool) -> None:
         for widget in (
             self._enabled,
+            self._importance,
+            self._conflict_restart,
             self._propose_slider,
             self._proposal_steps_slider,
             self._candidates_slider,

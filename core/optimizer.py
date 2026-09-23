@@ -463,6 +463,7 @@ class SceneOptimizer:
                 "srd_total_splits": float(stats.total_splits),
                 "srd_total_growth": float(stats.total_added),
                 "srd_total_deletes": float(stats.total_deleted),
+                "srd_total_restarts": float(stats.total_restarts),
                 "srd_evaluated": float(stats.evaluated),
                 "srd_promising": float(stats.promising),
                 "srd_accepted": float(stats.accepted),
